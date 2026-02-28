@@ -3,6 +3,11 @@
 
 本脚本旨在通过语义对齐（Semantic Alignment）分析，检测并清理 GGUF 模型词表（Vocabulary）中质量较差或冗余的 Token。它通过对比“单个长 Token”与其“切分后的子 Token 序列”在嵌入空间（Embedding Space）中的相似度，识别出语义偏移较大的 Token，并将其替换为保留位（Reserved Tokens），最后生成修补后的 GGUF 文件。
 
+## changelog
+- 2/28更新：不再替换原有的 token，而是仅删除 merges 规则，这允许模型说出这些 tokens，只是我们提交的 message 不会被 tokenize 成这些 token
+- 当然，你也可以使用 logits_bias[...] = -inf 的方式不让模型说出这些 tokens
+- 但是，由于统计方法问题（我也许应该用 llama 的词表，而不是 qwen3 的词表），有一些低相似度的 token 确是模型理解的
+
 ## 主要功能
 
 1.  **语义对齐检测**：利用 Embedding 模型计算长 Token 与其分词结果之间的余弦相似度。

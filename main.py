@@ -280,11 +280,11 @@ if options == 2 and __name__ == "__main__":
     for token, id in vocab.items():
         if id in to_remove:
           removed_vocab[token] = 1
-          token = to_remove[id]
+    #      token = to_remove[id]
 
-        copy_vocab[token] = id
+    #    copy_vocab[token] = id
 
-    tokenizer_config["model"]["vocab"] = copy_vocab
+    #tokenizer_config["model"]["vocab"] = copy_vocab
 
     copy_merges = []
     for merge in merges:
@@ -296,7 +296,7 @@ if options == 2 and __name__ == "__main__":
     tokenizer_config["model"]["merges"] = copy_merges
 
     with open("tokenizer_qwen3.5_new.json", "w", encoding="utf-8") as f:
-        json.dump(tokenizer_config, f, ensure_ascii=False)
+        json.dump(tokenizer_config, f, ensure_ascii=False, indent='\t')
 
 
 
@@ -426,7 +426,7 @@ if options == 3 and __name__ == "__main__":
             ggml_tokens[v] = k
 
         with open(name+".json", 'w', encoding='utf8') as f:
-            json.dump(s, f, ensure_ascii=False)
+            json.dump(s, f, ensure_ascii=False, indent='\t')
 
     mutate_gguf(
         source_model=SOURCE_MODEL,
