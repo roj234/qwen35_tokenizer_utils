@@ -21,7 +21,7 @@ def mutate_gguf(
     target_model,
     kv_from_model=None,
     keys_to_copy=None,
-    manual_kv_overrides=None,
+    kv_overrides=None,
     keys_to_remove=None
 ):
     print(f"[*] 正在读取目标模型 (Base): {source_model}")
@@ -31,63 +31,34 @@ def mutate_gguf(
     arch = str(arch_val.contents())
     writer = GGUFWriter(target_model, arch=arch)
 
-    # 1. 准备要复制的属性池
-    kv_overrides = {}
+    if kv_overrides is None: kv_overrides = {}
+
     if keys_to_copy is not None:
         print(f"[*] 正在读取属性来源模型 (Source): {kv_from_model}")
         source_reader = GGUFReader(kv_from_model)
         for key in keys_to_copy:
             kv = source_reader.get_field(key)
             if kv:
-                kv_overrides[key] = kv
-                print(f"  [克隆准备] 读取到 {key}")
-            else:
-                print(f"  [警告] 源文件中未找到 Key: {key}")
-    else:
-        keys_to_copy = {}
+                kv_overrides[key] = {
+                    "value": kv.contents(),
+                    "type": kv.types[0]
+                }
 
-    # 2. 处理元数据 (KV Pairs)
     print("[*] 正在合并元数据...")
-
-    # 记录已经处理过的覆盖键，避免重复写入
-    processed_overrides = set()
 
     for kv in reader.fields.values():
         name = kv.name
-
-        if name.startswith("GGUF."):
-            continue
-
-        # A. 如果在删除列表中，跳过
+        if name.startswith("GGUF."): continue
         if keys_to_remove and name in keys_to_remove:
-            print(f"  [删除] -> {name}")
+            print(f"  [删除] -> {key}")
             continue
+        if name in kv_overrides: continue
 
-        # B. 如果在覆盖列表中，从 Source 池中取值
-        if name in kv_overrides:
-            new_kv = kv_overrides[name]
-            writer.add_key_value(name, new_kv.contents(), new_kv.types[0])
-            processed_overrides.add(name)
-            print(f"  [覆盖] -> {name} (来自 Source)")
-            continue
-
-        # 先不管了
-        if name in manual_kv_overrides:
-            new_kv = manual_kv_overrides[name]
-            writer.add_key_value(name, new_kv["value"], new_kv["type"])
-            processed_overrides.add(name)
-            print(f"  [覆盖] -> {name} (来自 Manual)")
-            continue
-
-        # C. 保持原样写入
         writer.add_key_value(name, kv.contents(), kv.types[0])
 
-    # D. 处理那些在 Target 中不存在，但在 Source 中存在需要新增的键
-    for key in keys_to_copy:
-        if key not in processed_overrides and key in kv_overrides:
-            new_kv = kv_overrides[key]
-            writer.add_key_value(new_kv.name, new_kv.contents(), new_kv.types[0])
-            print(f"  [新增] -> {key} (来自 Source)")
+    for key, value in kv_overrides.items():
+        writer.add_key_value(key, value["value"], value["type"])
+        print(f"  [新增] -> {key}")
 
     total_bytes = 0
 
@@ -97,8 +68,6 @@ def mutate_gguf(
 
     bar = tqdm(desc="Writing", total=total_bytes, unit="byte", unit_scale=True)
 
-    # 4. 执行写入
-    print(f"[*] 正在保存到: {target_model}")
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_ti_data_to_file()
@@ -107,7 +76,6 @@ def mutate_gguf(
         bar.update(tensor.n_bytes)
 
     writer.close()
-    print("[+] 成功！")
 
 
 def generate_changeset(data_csv: str, symbol_remove_type: int):
@@ -146,15 +114,15 @@ def generate_changeset(data_csv: str, symbol_remove_type: int):
 
             return 3 if len(set(token)) != 1 else 0
 
-        if re.match(r'^[!@#$%^&*()_+-=[\]\\{}|:";\',./<>?]+$', token):
+        if len(token.strip()) == 1:
+            return 0
+
+        if token.strip() in symbol_whitelist:
+            return 0
+
+        if re.match(r'^[ `~!@#$%^&*()_+\-=[\]\\{}|:";\',./<>?]+$', token):
             if len(token) > 8:
                 return 3
-
-            if len(token) == 1:
-                return 0
-
-            if token.strip() in symbol_whitelist:
-                return 0
 
             unique_chars = len(set(token))
             if unique_chars == 1:
@@ -272,7 +240,7 @@ def patch_gguf(source_model: str, target_model: str):
         source_model=source_model,
         target_model=target_model,
 
-        manual_kv_overrides={
+        kv_overrides={
             "tokenizer.ggml.tokens": {
                 "value": ggml_tokens,
                 "type": GGUFValueType.ARRAY
@@ -282,7 +250,7 @@ def patch_gguf(source_model: str, target_model: str):
                 "type": GGUFValueType.ARRAY
             },
             "tokenizer.patched_by": {
-                "value": "roj234/qwen35_tokenizer_utils", 
+                "value": "roj234/qwen35_tokenizer_utils",
                 "type": GGUFValueType.STRING
             }
         }

@@ -11,7 +11,7 @@
 - 1.0算法：**语义对齐检测**：计算【长 token】与其【通过参考模型词表切分的子 token】的 Embedding 之间的余弦相似度。
 - 2.0算法：**拆字检测**：构造 prompt 让模型用 JSON 解释某个 token 内部包含哪些字。
 - 2.1算法：**Last Token PPL**：在2.0的基础上，使用预期的JSON文本，计算模型预测JSON列表关闭符号`]`的困惑度
-- 使用2.1算法重新处理了8000个长中文token，见 https://github.com/roj234/qwen35_tokenizer_utils/issues/2
+- 使用2.1算法重新处理了8038个长中文token，和2314个符号token，见 https://github.com/roj234/qwen35_tokenizer_utils/issues/2
 
 ## 这解决了什么问题？ (For What)
 词表中有未被充分训练的词汇，Qwen3.5 在这些词汇上表现很差  
@@ -30,13 +30,15 @@ https://github.com/QwenLM/Qwen3.5/issues/33
 ![After](images/after.png)
 
 （更多图片见Qwen的issue）  
-你也可以查看并在本地测试[对抗样本](spring_ad.md)
+
+### 你也可以查看并在本地测试[对抗样本](spring_ad.md)
+> 实验发现，即便是在 400B 模型上，这些高 PPL 的有害 Token 依然会导致严重的‘关联性幻觉’（凭空捏造文本中不存在的关键词）。
 
 ### 这是新事吗？ (Reference)
 否，太阳底下无新事：https://zhuanlan.zhihu.com/p/697685138
 
 ## 如果我是最终用户？ (Quick Start)
-- 本项目中的`tokenizer_qwen_3.5_new.json`目前(v2.1)删除了1243个token
+- 本项目中的`tokenizer_patched.json`目前(v2.1)删除了4911(共248043)个token
 
 如果你不使用GGUF，直接下载项目中`tokenizer_patched.json`并替换Qwen3.5默认的`tokenizer.json`即可  
 如果你用GGUF，克隆该项目并直接运行第3阶段  
@@ -70,23 +72,25 @@ pip install numpy llama-cpp-python tqdm gguf
 *   **逻辑**：从词表中提取长度大于等于4的中文token，0=不删除符号token，1=计算符号token的PPL，2=按白名单保留符号token
 *   **产物**：`tokens_preview.csv`
 
-### 1.5 选择一个或多个算法执行
+### 1.5 选择一个或多个算法执行 (依电脑配置不同可能需要执行数小时)
 
 `alg_1.0_embedding.py`是第一代算法
 
 *   **命令**：`python alg_1.0_embedding.py -h`
 *   需要一个用于提供参考词表的 GGUF 模型（REFERENCE_MODEL）。 我选择的是 Qwen3-4B-Instruct-2507 // 因为我手上正好有它
 *   **逻辑**：对比“整体 Token”与“切分后序列”的余弦相似度。。
-*   **产物**：`tokens_alignment.csv`
+*   **产物**：`some_name.csv`
 
 `alg_2.0_split_word.py`是第二代算法
 
 *   **命令**：`python alg_2.0_split_word.py -h`
 *   **逻辑**：构造 prompt 让模型用 JSON 解释某个 token 内部包含哪些字，并计算PPL。
-*   **产物**：`black_hole.csv`
+*   **产物**：`some_name.csv`
+
+- 第二代算法认为，如果模型无法在逻辑上将一个 token 拆解为其组成汉字，则说明该 token 对模型而言是一个‘无法理解的黑盒’，这依然有失偏颇，但已经比1.0好了很多。
 
 ### 2：生成优化词表 (可以带入多个csv文件)
-*   **命令**：`python main.py 2 --csv=black_hole.csv,block_hole_sym.csv,tokens_preview.csv --ppl-max=1.005`
+*   **命令**：`python main.py 2 --csv=black_hole_cn4.csv,block_hole_sym.csv,tokens_preview.csv --ppl-max=1.005`
 *   **逻辑**：结合语义分数和过滤规则，删除 Token。
 *   **产物**：新的 `tokenizer_patched.json`（删除后的合并规则）。
 
@@ -110,6 +114,6 @@ pip install matplotlib seaborn pandas
 - 另外一部分是因为 Qwen3 的分词器不太行，语义切的过于稀碎了
 （比如假设泰文Apple，切成五个token \[a p p l e]，怎么看得懂?）
 
-**随该项目发布的`tokenizer_patched.json`，我删除了很多符号token**
+**随该项目发布的`tokenizer_patched.json`，我删除了很多无意义符号的token**
 - 我不*确定*这对模型的代码能力有何影响，我只是*认为*会有提升
 - 你可以在本地使用阶段2的命令，只提供`block_hole_cn4.csv`以生成不删除符号的词表
