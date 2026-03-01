@@ -1,304 +1,17 @@
 
-import sys
-
-if len(sys.argv) == 1:
-    print("""
-        read README.md or throw me to a LLM
-""")
-    exit()
-
-options = int(sys.argv[1]) # 1, 2, 3
-
-REFERENCE_MODEL = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
-SOURCE_MODEL = "Qwen3.5-35B-A3B-Q4_K_M.gguf"
-OUTPUT_MODEL = "final_model.gguf"      # 生成的结果
-
+import argparse
 import re
-import io
 import json
 import csv
 from collections import OrderedDict
 
 from tqdm import tqdm
 import numpy as np
-import pandas as pd
 
-LLAMA_POOLING_TYPE_NONE = 0
-LLAMA_POOLING_TYPE_MEAN = 1
-LLAMA_POOLING_TYPE_CLS = 2
-LLAMA_POOLING_TYPE_LAST = 3
-LLAMA_POOLING_TYPE_RANK = 4
-from llama_cpp import Llama
-from llama_cpp.llama_embedding import LlamaEmbedding
+from bpe_tokenizer import decode_token
+from symbol_utils import symbol_whitelist
 
-#from llama_cpp._ggml import libggml
-#libggml.ggml_backend_load("ggml-cuda.dll".encode("utf-8"))
-#libggml.ggml_backend_load("ggml-cpu-alderlake.dll".encode("utf-8"))
-
-def cosine_similarity(v1, v2):
-    return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-
-def analyze_semantic_alignment(tokenizer, model, text, token_id):
-    full_tokens = [token_id]
-    split_tokens = []
-
-    prev_tokens = tokenizer.tokenize(text)
-    if len(prev_tokens) == 1:
-        return
-
-    for t in prev_tokens:
-        #print(tokenizer.detokenize([t]).decode("utf-8"))
-        split_tokens += model.tokenize(tokenizer.detokenize([t]))
-
-    emb0 = np.squeeze(model.embed([
-      full_tokens,
-    ]))
-    emb1 = np.squeeze(model.embed([
-      split_tokens,
-    ]))
-
-    # 4. 计算相似度
-    similarity = cosine_similarity(
-          emb0,
-          emb1
-    )
-
-    return {
-        "alignment": similarity,
-    }
-
-def bytes_to_unicode():
-    """
-    生成一个字典，映射 0..255 字节到可见的 Unicode 字符。
-    这是为了让 BPE 算法在处理词表时，不会遇到像空格、换行符这种不可见或有歧义的字符。
-    """
-    bs = list(range(ord("!"), ord("~") + 1)) + \
-         list(range(ord("¡"), ord("¬") + 1)) + \
-         list(range(ord("®"), ord("ÿ") + 1))
-    cs = bs[:]
-    n = 0
-    # 2. 对于 0-255 之间不在上述范围内的“危险字节”（如控制字符、空格、换行）
-    # 将它们映射到 256 之后不常用的 Unicode 区域
-    for b in range(2**8):
-        if b not in bs:
-            bs.append(b)
-            cs.append(2**8 + n)
-            n += 1
-    cs = [chr(n) for n in cs]
-    return dict(zip(bs, cs)), dict(zip(cs, bs))
-
-enc_map, dec_map = bytes_to_unicode()
-
-def decode_token(s: str) -> bytearray:
-    byte_data = bytearray()
-    for char in s:
-        if char in dec_map:
-            byte_data.append(dec_map[char])
-        else:
-            byte_data += char.encode("utf-8")
-
-    return byte_data
-
-def calculate_ppl(model, text):
-    tokens = [id] if id else model.tokenize(text.encode("utf-8"))
-    n_tokens = len(tokens)
-
-    model.reset()
-    model.eval(tokens)
-
-    # 3. 计算负对数似然 (NLL)
-    # PPL = exp(平均 NLL)
-    nll = 0.0
-    count = 0
-
-    # 逐个 token 计算概率（从第 2 个 token 开始预测）
-    for i in range(1, n_tokens):
-        # 得到预测第 i 个 token 时的 logits (基于前 i-1 个 token)
-        # 注意：llama.cpp 的 eval 是增量的，为了简单起见，这里我们用简化的概率获取方式
-        # 在实际高性能测试中，通常使用 llama-cpp 自带的 ppl 示例工具
-
-        # 获取第 i-1 位置输出的 logits
-        logits = model._scores[i-1, :]
-
-        # Softmax 归一化
-        exp_logits = np.exp(logits - np.max(logits))
-        probs = exp_logits / np.sum(exp_logits)
-
-        # 目标 token 的概率
-        token_id = tokens[i]
-        token_prob = probs[token_id]
-
-        # 累加负对数概率
-        nll += -np.log(token_prob + 1e-10)
-        count += 1
-
-    ppl = np.exp(nll / count)
-    return ppl
-
-# Phase 1 generate Aligment
-if options == 1 and __name__ == "__main__":
-    with open("tokenizer_qwen3.5.json", "r", encoding="utf-8") as f:
-        tokenizer_config = json.load(f)
-
-    rows = []
-    for k, v in tokenizer_config["model"]["vocab"].items():
-        s = decode_token(k)
-        rows.append({
-            "ID": v,
-            "Length": len(s),
-            "Text": s.decode("utf-8", errors="replace"),
-            "Bytes": bytes(s),
-            "Raw_Key": k
-        })
-
-    # 按长度排序 (从长到短)
-    rows.sort(key=lambda x: x["Length"], reverse=True)
-    i = 0
-    for item in rows:
-        if len(item["Text"]) < 4:
-            rows = rows[:i]
-            break
-        i += 1
-
-    print(f"tokens to check: {len(rows)}")
-
-    tokenizer = Llama(
-        model_path=REFERENCE_MODEL,
-        vocab_only=True,
-        verbose=False
-    )
-
-    llm = LlamaEmbedding(
-        model_path=SOURCE_MODEL,
-        verbose=False,
-        embeddings=True,
-        pooling_type=LLAMA_POOLING_TYPE_LAST,
-        n_ctx=512,
-        n_gpu_layers=20
-    )
-
-    print(llm.tokenize("给我写一个能开灯的简易程序".encode("utf-8")))
-    print(llm.detokenize([188317]))
-
-    fieldnames = ["ID", "Text", "alignment", "Label"]
-    with open("tokens_alignment.csv", "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-
-        for item in tqdm(rows):
-            res = analyze_semantic_alignment(tokenizer, llm, item["Bytes"], item["ID"])
-            if not res:
-                writer.writerow({
-                    "ID": item["ID"],
-                    "Text": item["Text"],
-                    "alignment": -1,
-                    "Label": "Unknown",
-                })
-                continue
-
-            status = "BAD" if res['alignment'] < 0.6 else "OK"
-            if res['alignment'] < 0.5: status = "CRITICAL"
-
-            writer.writerow({
-                "ID": item["ID"],
-                "Text": item["Text"],
-                "alignment": res['alignment'],
-                "Label": status
-            })
-
-
-def is_confusing_token(text):
-    # 处理纯空格 Token
-    if re.match(r'^[!@#$%^&*()_+-=[\]\\{}|:";\', ./<>?]+$', text):
-        # 如果是纯空格，且长度不在 [1, 2, 4, 8] 之中，则删除 (变成 Reserved)
-        if len(text) not in [1, 2, 4, 8]:
-            return True
-        return False # 保留 1, 2, 4, 8 个空格
-
-    return False
-
-def is_removeable_token(text):
-    # 1. 定义排除范围：如果包含泰语或俄语字符，直接返回 False
-    # \u0e00-\u0e7f: 泰语
-    # \u0400-\u04ff: 西里尔字母 (俄语等)
-    if re.search(r'[\u0e00-\u0e7f\u0400-\u04ff]', text):
-        return False
-
-    # 2. 检查是否包含中文字符
-    has_chinese = bool(re.search(r'[\u4e00-\u9fff]', text))
-    if has_chinese:
-        return True
-
-    # 3. 检查是否全是“特殊符号”
-    # 我们移除掉所有 Unicode 字母和数字 (\w) 以及空白符 (\s)
-    # 如果剩下的内容不为空，且原本不含普通英文字母，则视为特殊符号
-    # 这里用一种更直观的方法：匹配常见的标点、符号、Emoji
-    # 或者判断：如果不含任何字母数字，但包含内容，就是纯符号
-    clean_text = re.sub(r'[\w\s]', '', text)
-    if len(text) > 0 and len(clean_text) == len(text):
-        return True
-
-    return False
-
-def generate_reserved_dict(csv_path):
-    # 读取CSV
-    df = pd.read_csv(csv_path)
-
-    reserved_dict = {}
-    counter = 0
-
-    for idx, row in df.iterrows():
-        token_id = int(row['ID'])
-        text = str(row['Text'])
-        label = row['Label']
-
-        #if is_confusing_token(text):
-        #    reserved_dict[token_id] = f"<|RESERVED_{counter}|> #{text}"
-        #    counter += 1
-
-        if label == 'CRITICAL' and is_removeable_token(text):
-            reserved_dict[token_id] = f"<|RESERVED_{counter}|>"
-            counter += 1
-
-    return reserved_dict
-
-# Phase 2 dummies tokens
-if options == 2 and __name__ == "__main__":
-    # From HF Repo
-    with open("tokenizer_qwen3.5.json", "r", encoding="utf-8") as f:
-        tokenizer_config = json.load(f)
-
-    vocab = tokenizer_config["model"]["vocab"]
-    merges = tokenizer_config["model"]["merges"]
-
-    to_remove = generate_reserved_dict('tokens_alignment.csv')
-
-    print(f"{len(to_remove)} tokens will be removed")
-
-    copy_vocab = OrderedDict()
-    removed_vocab = dict()
-    for token, id in vocab.items():
-        if id in to_remove:
-          removed_vocab[token] = 1
-    #      token = to_remove[id]
-
-    #    copy_vocab[token] = id
-
-    #tokenizer_config["model"]["vocab"] = copy_vocab
-
-    copy_merges = []
-    for merge in merges:
-        if merge.replace(" ", "") in removed_vocab:
-            print("remove merge rule "+decode_token(merge).decode("utf-8", errors="replace"))
-        else:
-            copy_merges.append(merge)
-
-    tokenizer_config["model"]["merges"] = copy_merges
-
-    with open("tokenizer_qwen3.5_new.json", "w", encoding="utf-8") as f:
-        json.dump(tokenizer_config, f, ensure_ascii=False, indent='\t')
-
-
+from typing import Dict, List
 
 from gguf import GGUFReader, GGUFWriter
 from gguf.constants import GGUFValueType
@@ -396,18 +109,151 @@ def mutate_gguf(
     writer.close()
     print("[+] 成功！")
 
-# Phase 3 Apply GGUF Patch (Dynamic)
-if options == 3 and __name__ == "__main__":
-    with open("tokenizer_qwen3.5_new.json", "r", encoding="utf-8") as f:
+
+def generate_changeset(data_csv: str, symbol_remove_type: int):
+    with open("tokenizer.json", "r", encoding="utf-8") as f:
+        tokenizer_config = json.load(f)
+
+    rows = []
+    for k, v in tokenizer_config["model"]["vocab"].items():
+        s = decode_token(k)
+        rows.append({
+            "ID": v,
+            "Length": len(s),
+            "Text": s.decode("utf-8", errors="replace"),
+            "Bytes": bytes(s),
+        })
+
+    # 按长度排序 (从长到短)
+    rows.sort(key=lambda x: x["Length"], reverse=True)
+    print(f"tokens total (no special): {len(rows)}")
+
+    i = 0
+    j = 0
+
+    def get_token_type(token):
+        has_chinese = bool(re.search(r'[\u4e00-\u9fff]', token))
+        if has_chinese:
+            return 1
+
+        if symbol_remove_type == 0:
+            return 0
+
+        if re.match(r'^\s+$', token):
+            # 如果是纯空格，且长度不在 [1, 2, 4, 8] 之中，则删除 (变成 Reserved)
+            if len(token) not in [1, 2, 4, 8]:
+                return 3
+
+            return 3 if len(set(token)) != 1 else 0
+
+        if re.match(r'^[!@#$%^&*()_+-=[\]\\{}|:";\',./<>?]+$', token):
+            if len(token) > 8:
+                return 3
+
+            if len(token) == 1:
+                return 0
+
+            if token.strip() in symbol_whitelist:
+                return 0
+
+            unique_chars = len(set(token))
+            if unique_chars == 1:
+                return 3 if len(token) > 4 else 2
+
+            if symbol_remove_type == 2:
+                # DELETE
+                return 3
+
+            return 2 # CHECK_PPL
+
+        return 0
+
+    with open(data_csv, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["ID", "Text", "Delete"])
+        writer.writeheader()
+
+        for item in rows:
+            token_type = get_token_type(item["Text"])
+            if token_type == 0:
+                continue
+
+            if token_type == 1 and len(item["Text"]) < 4:
+                continue
+
+            writer.writerow({
+                "ID": item["ID"],
+                "Text": item["Text"],
+                "Delete": int(token_type == 3)
+            })
+
+            if token_type != 3:
+                i += 1
+            else:
+                j += 1
+
+    print(f"ready to check: {i}, ready to remove {j}")
+
+def remove_tokens(data_csvs: List[str]):
+    # From HF Repo
+    with open("tokenizer.json", "r", encoding="utf-8") as f:
         tokenizer_config = json.load(f)
 
     vocab = tokenizer_config["model"]["vocab"]
     merges = tokenizer_config["model"]["merges"]
 
-    reader = GGUFReader(SOURCE_MODEL)
+    to_remove = {}
+    replace_with_reserved = False
+
+    def rm(token):
+        if token in to_remove:
+            return
+        to_remove[token] = f"<|RESERVED_{len(to_remove)}|>"
+
+    # 读取CSV
+    for data_csv in data_csvs:
+        with open(data_csv, mode='r', encoding='utf-8', errors='ignore') as infile:
+            reader = csv.DictReader(infile)
+
+            for row in reader:
+                if delete_criteria(row):
+                    rm(int(row["ID"]))
+
+    copy_vocab = OrderedDict()
+    removed_vocab = dict()
+    for token, id in vocab.items():
+        if id in to_remove:
+            removed_vocab[token] = 1
+            token = to_remove[id]
+
+        copy_vocab[token] = id
+
+    if replace_with_reserved:
+        tokenizer_config["model"]["vocab"] = copy_vocab
+
+    copy_merges = []
+    for merge in merges:
+        if merge.replace(" ", "") in removed_vocab:
+            print("remove merge rule "+decode_token(merge).decode("utf-8", errors="replace"))
+        else:
+            copy_merges.append(merge)
+
+    tokenizer_config["model"]["merges"] = copy_merges
+
+    print(f"{len(to_remove)} tokens removed")
+
+    with open("tokenizer_patched.json", "w", encoding="utf-8") as f:
+        json.dump(tokenizer_config, f, ensure_ascii=False, indent='\t')
+
+def patch_gguf(source_model: str, target_model: str):
+    with open("tokenizer_patched.json", "r", encoding="utf-8") as f:
+        tokenizer_config = json.load(f)
+
+    vocab = tokenizer_config["model"]["vocab"]
+    merges = tokenizer_config["model"]["merges"]
+
+    reader = GGUFReader(source_model)
 
     ggml_tokens: list[str] = []
-    ggml_merges: list[str] = merges
 
     for kv in reader.fields.values():
         name = kv.name
@@ -416,21 +262,15 @@ if options == 3 and __name__ == "__main__":
         if not (name == "tokenizer.ggml.tokens" or name == "tokenizer.ggml.merges"):
             continue
 
-        s = kv.contents()
         if name == "tokenizer.ggml.tokens":
-            ggml_tokens = s
-        #else:
-        #    ggml_merges = s
+            ggml_tokens = kv.contents()
 
-        for k, v in vocab.items():
-            ggml_tokens[v] = k
-
-        with open(name+".json", 'w', encoding='utf8') as f:
-            json.dump(s, f, ensure_ascii=False, indent='\t')
+            for k, v in vocab.items():
+                ggml_tokens[v] = k
 
     mutate_gguf(
-        source_model=SOURCE_MODEL,
-        target_model=OUTPUT_MODEL,
+        source_model=source_model,
+        target_model=target_model,
 
         manual_kv_overrides={
             "tokenizer.ggml.tokens": {
@@ -438,10 +278,70 @@ if options == 3 and __name__ == "__main__":
                 "type": GGUFValueType.ARRAY
             },
             "tokenizer.ggml.merges": {
-                "value": ggml_merges,
+                "value": merges,
                 "type": GGUFValueType.ARRAY
             },
+            "tokenizer.patched_by": {
+                "value": "roj234/qwen35_tokenizer_utils", 
+                "type": GGUFValueType.STRING
+            }
         }
     )
 
-# Phase 4 Apply GGUF Patch (Static)
+# 最高Last Token PPL以保留token
+LAST_TOKEN_PPL_MAX = 1.01
+
+def delete_criteria(row: Dict[str, str]):
+    """
+    是否删除一行
+    :param row:
+    :return:
+    """
+
+    is_delete = row.get("Delete", "0")
+    if is_delete == "True" or is_delete == "1":
+        return True
+
+    embedding_v1_score = row.get("Label", "OK")
+    if embedding_v1_score == "CRITICAL": return True
+
+    split_word_v2_score = row.get("Split", "True")
+    if split_word_v2_score != "True":
+        v2_ppl = float(row.get("PPL", "-1"))
+        if v2_ppl > LAST_TOKEN_PPL_MAX:
+            return True
+
+    return False
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Tokenizer 处理工具")
+
+    def list_of_strings(arg):
+        return arg.split(',')
+
+    # 必须参数：运行哪个阶段
+    parser.add_argument("phase", type=int, choices=[1, 2, 3],
+                        help="运行阶段: 1-生成待检查的tokens列表, 2-生成分词器配置, 3-应用Patch到GGUF")
+
+    # 文件路径参数
+    parser.add_argument("--source", type=str, default="Qwen3.5-35B-A3B-MXFP4_MOE.gguf",
+                        help="原始 GGUF 模型路径")
+    parser.add_argument("--output", type=str, default="patched_model.gguf",
+                        help="生成的 GGUF 模型路径")
+    parser.add_argument("--csv", type=list_of_strings, default="tokens_preview.csv",
+                        help="CSV 文件")
+
+    # 逻辑参数
+    parser.add_argument("--symbol-remove-type", type=int, choices=[0, 1, 2], default=0,
+                        help="0=不删除符号token，1=计算PPL，2=按白名单保留符号token")
+    parser.add_argument("--ppl-max", type=float, default=1.005,
+                        help="最高 Last Token PPL 阈值")
+    args = parser.parse_args()
+
+    if args.phase == 1:
+        generate_changeset(args.csv[0], args.symbol_remove_type)
+    if args.phase == 2:
+        LAST_TOKEN_PPL_MAX = args.ppl_max
+        remove_tokens(args.csv)
+    if args.phase == 3:
+        patch_gguf(args.source, args.output)
