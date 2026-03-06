@@ -1,6 +1,8 @@
 
 # 词表语义分析与修补工具 (Tokenizer Analyzer & Patcher)
 
+[English version (Methodology only)](README_en.md)
+
 本项目使用几种**我拍脑袋想出来但是有用**的算法，寻找Qwen3.5(以及其他模型)的 BPE 分词器中可能存在的欠训练 token  
 找到之后，
 - 通过**删除 merges 规则**的方式，强制分词器将“坏词”切分为更小、训练更充分的子 token
@@ -109,11 +111,11 @@ pip install matplotlib seaborn pandas
 
 ## 注意事项
 
-**某些西班牙语、俄语、泰语字符得分很低**
+**某些西班牙语、俄语、泰语字符在1.0算法中得分很低**
 - 其中，*确实*有一部分欠训练
 - 另外一部分是因为 Qwen3 的分词器不太行，语义切的过于稀碎了
 （比如假设泰文Apple，切成五个token \[a p p l e]，怎么看得懂?）
 
 **随该项目发布的`tokenizer_patched.json`，我删除了很多无意义符号的token**
 - 我不*确定*这对模型的代码能力有何影响，我只是*认为*会有提升
-- 你可以在本地使用阶段2的命令，只提供`block_hole_cn4.csv`以生成不删除符号的词表
+- 你可以在本地使用阶段2的命令，只提供`black_hole_cn4.csv`以生成不删除符号的词表
