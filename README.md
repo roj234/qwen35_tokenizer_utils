@@ -3,6 +3,8 @@
 
 [English version (Methodology only)](README_en.md)
 
+> 模搭那个人回复的链接有误，请看这个 [如何让模型用中文思考](https://github.com/QwenLM/Qwen3.5/issues/35#issuecomment-3996197461)
+
 本项目使用几种**我拍脑袋想出来但是有用**的算法，寻找Qwen3.5(以及其他模型)的 BPE 分词器中可能存在的欠训练 token  
 找到之后，
 - 通过**删除 merges 规则**的方式，强制分词器将“坏词”切分为更小、训练更充分的子 token
