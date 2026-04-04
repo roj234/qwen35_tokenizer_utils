@@ -121,3 +121,13 @@ pip install matplotlib seaborn pandas
 **随该项目发布的`tokenizer_patched.json`，我删除了很多无意义符号的token**
 - 我不*确定*这对模型的代码能力有何影响，我只是*认为*会有提升
 - 你可以在本地使用阶段2的命令，只提供`black_hole_cn4.csv`以生成不删除符号的词表
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=roj234%2Fqwen35_tokenizer_utils&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=roj234/qwen35_tokenizer_utils&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=roj234/qwen35_tokenizer_utils&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=roj234/qwen35_tokenizer_utils&type=date&legend=top-left" />
+ </picture>
+</a>
